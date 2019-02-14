@@ -141,6 +141,9 @@ func SaveFile(img gocv.Mat, id int, count int) {
 		trainlist.Sync()
 	}
 	imgout, err := os.Create(strconv.Itoa(id) + "_" + strconv.Itoa(count) + ".png")
+=======
+	imgout, err := os.Create(strconv.Itoa(id) + "_" + thisStr + "_" + strconv.Itoa(count) + ".png")
+>>>>>>> Github/master
 	defer imgout.Close()
 	if err != nil {
 		log.Println("生成文件出错")
