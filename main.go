@@ -24,20 +24,8 @@ import (
 var fontsList map[string]*truetype.Font
 var charList map[int]string
 var running chan int
-var trainlist *os.File
-var valilist *os.File
 
 func main() {
-	trainlist, err := os.Create("train.txt")
-	if err != nil {
-		log.Fatal("Failed to open the file", err.Error())
-	}
-
-	valist, err := os.Create("val.txt")
-	if err != nil {
-		log.Fatal("Failed to open the file", err.Error())
-	}
-
 	running = make(chan int, 10)
 	for num := 1; num <= 8; num++ {
 		running <- 1
@@ -135,14 +123,7 @@ func SaveFile(img gocv.Mat, id int, count int) {
 		log.Println("生成文件出错")
 		log.Fatal(err)
 	}
-	if count%5 == 0 {
-		valilist.WriteString(strconv.Itoa(id) + "_" + strconv.Itoa(count) + ".png " + thisStr + "\n")
-		valilist.Sync()
-	} else {
-		trainlist.WriteString(strconv.Itoa(id) + "_" + strconv.Itoa(count) + ".png " + thisStr + "\n")
-		trainlist.Sync()
-	}
-	imgout, err := os.Create(strconv.Itoa(id) + "_" + strconv.Itoa(count) + ".png")
+	imgout, err := os.Create(strconv.Itoa(id) + "_" + thisStr + "_" + strconv.Itoa(count) + ".png")
 	defer imgout.Close()
 	if err != nil {
 		log.Println("生成文件出错")
