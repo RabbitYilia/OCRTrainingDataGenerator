@@ -18,14 +18,19 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
 var fontsList map[string]*truetype.Font
 var charList map[int]string
 var running chan int
+var starttime int64
+var filecount int64
 
 func main() {
+	filecount = 0
+	starttime = time.Now().Unix()
 	running = make(chan int, 10)
 	for num := 1; num <= 8; num++ {
 		running <- 1
@@ -33,14 +38,22 @@ func main() {
 	ReadChar()
 	ReadFont()
 	i := 0
+	go showSpeed()
 	for id, thisStr := range charList {
 		i += 1
-		log.Printf("Processing[%d/%d]:%s", i, len(charList), thisStr)
+		log.Printf("Processing[%d/%d][%d]:%s", i, len(charList), id, thisStr)
 		<-running
 		go MakeBaseImg(id)
 	}
 	for len(running) < 8 {
 		time.Sleep(time.Second)
+	}
+	log.Println(time.Now().Unix() - starttime)
+}
+func showSpeed() {
+	for {
+		time.Sleep(time.Second * 5)
+		log.Printf("Speed:%d files per sec\n", atomic.LoadInt64(&filecount)/(time.Now().Unix()-starttime))
 	}
 }
 
@@ -115,13 +128,14 @@ func Erode(imgmat gocv.Mat) gocv.Mat {
 }
 
 func SaveFile(img gocv.Mat, id int, count int) {
+	atomic.AddInt64(&filecount, 1)
 	thisStr := charList[id]
 	image, err := img.ToImage()
 	if err != nil {
 		log.Println("生成文件出错")
 		log.Fatal(err)
 	}
-	imgout, err := os.Create(strconv.Itoa(id) + "_" + thisStr + "_" + strconv.Itoa(count) + ".png")
+	imgout, err := os.Create("./output/" + strconv.Itoa(id) + "_" + thisStr + "_" + strconv.Itoa(count) + ".png")
 	defer imgout.Close()
 	if err != nil {
 		log.Println("生成文件出错")
