@@ -1,7 +1,9 @@
 package main
 
 import (
+	"archive/zip"
 	"bufio"
+	"fmt"
 	"github.com/BurntSushi/graphics-go/graphics"
 	"github.com/golang/freetype"
 	"github.com/golang/freetype/truetype"
@@ -10,7 +12,6 @@ import (
 	"golang.org/x/image/math/fixed"
 	"image"
 	"image/draw"
-	"image/png"
 	"io"
 	"io/ioutil"
 	"log"
@@ -27,8 +28,15 @@ var charList map[int]string
 var running chan int
 var starttime int64
 var filecount int64
+var FileNameChan chan *ImgFile
+
+type ImgFile struct {
+	Filename string
+	Data     *gocv.Mat
+}
 
 func main() {
+	FileNameChan = make(chan *ImgFile, 100)
 	filecount = 0
 	starttime = time.Now().Unix()
 	running = make(chan int, 10)
@@ -38,123 +46,123 @@ func main() {
 	ReadChar()
 	ReadFont()
 	i := 0
-	go showSpeed()
+	go SaveProcess()
+	go StaticProcess()
 	for id, thisStr := range charList {
 		i += 1
 		log.Printf("Processing[%d/%d][%d]:%s", i, len(charList), id, thisStr)
 		<-running
 		go MakeBaseImg(id)
 	}
-	for len(running) < 8 {
+	for len(running) < 8 && len(FileNameChan) == 0 {
 		time.Sleep(time.Second)
 	}
 	log.Println(time.Now().Unix() - starttime)
 }
-func showSpeed() {
+func StaticProcess() {
 	for {
 		time.Sleep(time.Second * 5)
-		log.Printf("Speed:%d files per sec\n", atomic.LoadInt64(&filecount)/(time.Now().Unix()-starttime))
+		log.Println(atomic.LoadInt64(&filecount) / (time.Now().Unix() - starttime))
 	}
 }
 
-func MakeBaseImg(id int) {
-	thisStr := charList[id]
-	count := 0
-	for _, fontstyle := range fontsList {
-		face := truetype.NewFace(fontstyle, &truetype.Options{
-			Size:              70,
-			DPI:               0,
-			Hinting:           0,
-			GlyphCacheEntries: 0,
-			SubPixelsX:        0,
-			SubPixelsY:        0,
-		})
-		img := image.NewRGBA(image.Rect(0, 0, 100, 100))
-		draw.Draw(img, img.Bounds(), image.Black, image.ZP, draw.Src)
-		dr := &font.Drawer{
-			Dst:  img,
-			Src:  image.White,
-			Face: face,
-			Dot:  fixed.Point26_6{},
+func SaveProcess() {
+	fw, err := os.Create("output.zip")
+	if err != nil {
+		fmt.Printf("%v", err)
+		return
+	}
+	outputWriter := zip.NewWriter(fw)
+	var buf []byte
+	for {
+		atomic.AddInt64(&filecount, 1)
+		File := <-FileNameChan
+		buf, err = gocv.IMEncode(".png", *File.Data)
+		if err != nil {
+			log.Fatal(err)
 		}
-		dr.Dot.X = (fixed.I(100) - dr.MeasureString(thisStr)) / 2
+		f, err := outputWriter.Create(File.Filename)
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer File.Data.Close()
+		f.Write(buf)
+		outputWriter.Flush()
+	}
+	defer outputWriter.Close()
+	defer fw.Close()
+}
+
+func MakeBaseImg(id int) {
+	count := 0
+	img := image.NewRGBA(image.Rect(0, 0, 100, 100))
+	dr := &font.Drawer{
+		Dst: img,
+		Src: image.White,
+		Dot: fixed.Point26_6{},
+	}
+	op := truetype.Options{
+		Size:              70,
+		DPI:               0,
+		Hinting:           0,
+		GlyphCacheEntries: 0,
+		SubPixelsX:        0,
+		SubPixelsY:        0,
+	}
+	for _, fontstyle := range fontsList {
+		dr.Face = truetype.NewFace(fontstyle, &op)
+		dr.Dot.X = (fixed.I(100) - dr.MeasureString(charList[id])) / 2
 		dr.Dot.Y = fixed.I(75)
-		dr.DrawString(thisStr)
+		draw.Draw(img, img.Bounds(), image.Black, image.ZP, draw.Src)
+		dr.DrawString(charList[id])
+		newimg := image.NewRGBA(image.Rect(0, 0, 100, 100))
 		for degree := -90.0; degree <= 90; degree++ {
-			newimg := image.NewRGBA(image.Rect(0, 0, 100, 100))
 			graphics.Rotate(newimg, img, &graphics.RotateOptions{math.Pi / 180 * degree})
 			thisMat, err := gocv.ImageToMatRGBA(newimg)
 			if err != nil {
 				log.Fatal(err)
 			}
-			thisMat = RGBA2Binary(thisMat)
-			SaveFile(thisMat, id, count)
+			thisMatp := RGBA2Binary(&thisMat)
+			FileNameChan <- &ImgFile{Filename: strconv.Itoa(id) + "_" + charList[id] + "_" + strconv.Itoa(count) + ".png", Data: thisMatp}
 			count++
-			thisMat1 := Dilate(thisMat)
-			SaveFile(thisMat1, id, count)
+			thisMat1 := Dilate(thisMatp)
+			FileNameChan <- &ImgFile{Filename: strconv.Itoa(id) + "_" + charList[id] + "_" + strconv.Itoa(count) + ".png", Data: thisMat1}
 			count++
-			thisMat2 := Erode(thisMat)
-			SaveFile(thisMat2, id, count)
+			FileNameChan <- &ImgFile{Filename: strconv.Itoa(id) + "_" + charList[id] + "_" + strconv.Itoa(count) + ".png", Data: Erode(thisMatp)}
 			count++
-			thisMat3 := Erode(thisMat1)
-			SaveFile(thisMat3, id, count)
+			FileNameChan <- &ImgFile{Filename: strconv.Itoa(id) + "_" + charList[id] + "_" + strconv.Itoa(count) + ".png", Data: Erode(thisMat1)}
 			count++
+			defer thisMat.Close()
 		}
 	}
 	running <- 1
 }
 
-func RGBA2Binary(imgmat gocv.Mat) gocv.Mat {
+func RGBA2Binary(imgmat *gocv.Mat) *gocv.Mat {
 	NewMat := gocv.NewMat()
-	gocv.CvtColor(imgmat, &NewMat, gocv.ColorBGRAToGray)
-	gocv.Threshold(NewMat, &imgmat, 100, 255, gocv.ThresholdBinary)
-	return NewMat
+	gocv.CvtColor(*imgmat, &NewMat, gocv.ColorBGRAToGray)
+	gocv.Threshold(NewMat, imgmat, 100, 255, gocv.ThresholdBinary)
+	defer NewMat.Close()
+	return imgmat
 }
 
-func Dilate(imgmat gocv.Mat) gocv.Mat {
+func Dilate(imgmat *gocv.Mat) *gocv.Mat {
 	newImgmat := gocv.NewMat()
-	Elepoint := image.Point{X: 3, Y: 3}
-	Element := gocv.GetStructuringElement(gocv.MorphRect, Elepoint)
-	gocv.Dilate(imgmat, &newImgmat, Element)
-	return newImgmat
+	gocv.Dilate(*imgmat, &newImgmat, gocv.GetStructuringElement(gocv.MorphRect, image.Point{X: 3, Y: 3}))
+	return &newImgmat
 }
 
-func Erode(imgmat gocv.Mat) gocv.Mat {
+func Erode(imgmat *gocv.Mat) *gocv.Mat {
 	newImgmat := gocv.NewMat()
-	Elepoint := image.Point{X: 3, Y: 3}
-	Element := gocv.GetStructuringElement(gocv.MorphRect, Elepoint)
-	gocv.Erode(imgmat, &newImgmat, Element)
-	return newImgmat
+	gocv.Erode(*imgmat, &newImgmat, gocv.GetStructuringElement(gocv.MorphRect, image.Point{X: 3, Y: 3}))
+	return &newImgmat
 }
-
-func SaveFile(img gocv.Mat, id int, count int) {
-	atomic.AddInt64(&filecount, 1)
-	thisStr := charList[id]
-	image, err := img.ToImage()
-	if err != nil {
-		log.Println("生成文件出错")
-		log.Fatal(err)
-	}
-	imgout, err := os.Create("./output/" + strconv.Itoa(id) + "_" + thisStr + "_" + strconv.Itoa(count) + ".png")
-	defer imgout.Close()
-	if err != nil {
-		log.Println("生成文件出错")
-		log.Fatal(err)
-	}
-	err = png.Encode(imgout, image)
-	if err != nil {
-		log.Println("生成图片出错")
-		log.Fatal(err)
-	}
-}
-
 func ReadChar() {
 	charList = make(map[int]string)
 	f, err := os.Open("./charlist.txt")
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer f.Close()
 	reader := bufio.NewReader(f)
 	i := 1
 	for {
@@ -165,6 +173,7 @@ func ReadChar() {
 		charList[i] = strings.Split(line, "")[0]
 		i += 1
 	}
+	defer f.Close()
 }
 func ReadFont() {
 	fontsList = make(map[string]*truetype.Font)
